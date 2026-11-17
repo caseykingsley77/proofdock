@@ -13,3 +13,6 @@ proofdock = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
 [provider]
 cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "npm run test:anchor"
