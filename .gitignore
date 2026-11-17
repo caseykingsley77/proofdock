@@ -17,3 +17,8 @@ test-ledger/
 /target/deploy/*.json
 # OS
 .DS_Store
+
+# Node modules and JS test output
+/node_modules/
+/coverage/
+*.tsbuildinfo
