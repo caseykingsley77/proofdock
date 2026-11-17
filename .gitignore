@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+.coverage
+# Rust/Anchor
+/target/
+**/target/
+.anchor/
+test-ledger/
+**/test-ledger/
+# Credentials and generated keys
+.env
+*.keypair.json
+/target/deploy/*.json
+# OS
+.DS_Store

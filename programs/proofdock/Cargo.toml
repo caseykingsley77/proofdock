@@ -1,0 +1,21 @@
+[package]
+name = "proofdock"
+version = "0.1.0"
+description = "An educational SOL milestone escrow program for Solana"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "proofdock"
+
+[features]
+default = []
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "=1.2.1"
