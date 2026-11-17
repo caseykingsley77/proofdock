@@ -40,7 +40,13 @@ class SolanaRpc:
     def decode_base64_account(account: dict[str, Any]) -> bytes:
         try:
             encoded = account["data"]
-            if not isinstance(encoded, list) or len(encoded) != 2 or encoded[1] != "base64":
+            if (
+                not isinstance(encoded, list)
+                or len(encoded) != 2
+                or not isinstance(encoded[0], str)
+                or not encoded[0]
+                or encoded[1] != "base64"
+            ):
                 raise ValueError("unsupported account encoding")
             return base64.b64decode(encoded[0], validate=True)
         except (KeyError, TypeError, ValueError, binascii.Error) as exc:
