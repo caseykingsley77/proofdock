@@ -143,9 +143,6 @@ pub struct Release<'info> {
     #[account(mut)]
     pub client: Signer<'info>,
 
-    #[account(mut, address = escrow.contractor)]
-    pub contractor: SystemAccount<'info>,
-
     #[account(
         mut,
         has_one = client,
@@ -154,6 +151,9 @@ pub struct Release<'info> {
         bump = escrow.bump,
     )]
     pub escrow: Account<'info, Escrow>,
+
+    #[account(mut, address = escrow.contractor)]
+    pub contractor: SystemAccount<'info>,
 }
 
 #[derive(Accounts)]

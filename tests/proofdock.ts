@@ -74,17 +74,48 @@ describe("proofdock SOL milestone escrow", () => {
     expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
   });
 
+  it("blocks a different wallet from releasing someone else's escrow", async () => {
+    const { escrow, contractor } = await create();
+    const attacker = Keypair.generate();
+    await airdrop(provider, attacker.publicKey);
+    let rejected = false;
+    try {
+      await program.methods.release().accounts({
+        client: attacker.publicKey,
+        contractor: contractor.publicKey,
+        escrow,
+      }).signers([attacker]).rpc();
+    } catch (_) {
+      rejected = true; // has_one/client PDA constraints must reject
+    }
+    expect(rejected, "unauthorized release must fail").to.equal(true);
+    expect(await provider.connection.getAccountInfo(escrow)).to.not.equal(null);
+  });
+
   it("does not refund a funded escrow before expiry", async () => {
     const { escrow } = await create(3600);
+    let rejected = false;
     try {
       await program.methods.refundExpired().accounts({
         client: provider.wallet.publicKey,
         escrow,
       }).rpc();
-      expect.fail("should reject refunds before expiry");
     } catch (error) {
-      expect(String(error)).to.match(/NotExpired|deadline|error/i);
+      rejected = true;
+      expect(String(error)).to.match(/NotExpired|not reached its deadline/i);
     }
+    expect(rejected, "refund must fail before the deadline").to.equal(true);
+  });
+
+  it("refunds the client and closes an expired escrow", async () => {
+    const { escrow } = await create(3);
+    // Local-validator time is approximately wall time; allow it to advance.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await program.methods.refundExpired().accounts({
+      client: provider.wallet.publicKey,
+      escrow,
+    }).rpc();
+    expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
   });
 
   it("rejects a zero-value escrow", async () => {
@@ -93,6 +124,7 @@ describe("proofdock SOL milestone escrow", () => {
     const id = new anchor.BN(randomBytes(6).readUIntBE(0, 6));
     const escrow = escrowPda(provider.wallet.publicKey, id, program.programId);
     const deadline = new anchor.BN(Math.floor(Date.now() / 1000) + 3600);
+    let rejected = false;
     try {
       await program.methods.createEscrow(
         id, new anchor.BN(0), deadline,
@@ -103,9 +135,10 @@ describe("proofdock SOL milestone escrow", () => {
         escrow,
         systemProgram: SystemProgram.programId,
       }).rpc();
-      expect.fail("should reject empty escrow funding");
     } catch (error) {
-      expect(String(error)).to.match(/ZeroAmount|escrow amount|error/i);
+      rejected = true;
+      expect(String(error)).to.match(/ZeroAmount|Escrow amount must be greater than zero/i);
     }
+    expect(rejected, "zero-value creation must fail").to.equal(true);
   });
 });

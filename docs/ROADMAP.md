@@ -11,7 +11,7 @@ The following are future tasks, **not completed work**. Commit each change when 
 - [x] Add basic Anchor local-validator integration test source (run pending).
 - [ ] Run `cargo test` and `anchor build`; resolve any compiler/IDL errors.
 - [ ] Run `anchor test` under local validator; confirm create/release paths.
-- [ ] Add tested unauthorized release and expired refund scenarios.
+- [x] Add unauthorized release and expired refund integration test source (execution pending).
 - [ ] Add test for duplicate milestone IDs and fund conservation.
 - [ ] Cover RPC timeouts/rate limits and paginated/large account results.
 
