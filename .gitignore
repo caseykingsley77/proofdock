@@ -17,3 +17,7 @@ test-ledger/
 /target/deploy/*.json
 # OS
 .DS_Store
+
+/node_modules/
+/target/
+/.anchor/
