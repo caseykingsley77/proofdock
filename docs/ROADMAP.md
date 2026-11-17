@@ -7,7 +7,7 @@ The following are future tasks, **not completed work**. Commit each change when 
 - [x] Implement native SOL escrow instructions and account constraints.
 - [x] Add unit tests for time/amount rules (source authored; run pending).
 - [x] Build read-only Python account codec and RPC transport.
-- [x] Add Python unit/HTTP tests with mocked RPC (29 passing).
+- [x] Add Python unit/HTTP tests with mocked RPC and metadata hashing (33 passing).
 - [x] Add basic Anchor local-validator integration test source (run pending).
 - [ ] Run `cargo test` and `anchor build`; resolve any compiler/IDL errors.
 - [ ] Run `anchor test` under local validator; confirm create/release paths.

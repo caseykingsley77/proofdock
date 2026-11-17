@@ -35,6 +35,14 @@ flowchart LR
 | `release()` | Original client | Pay exact escrow amount to original contractor, close PDA, return rent |
 | `refund_expired()` | Original client, once expired | Close PDA and return deposit plus rent to the client |
 
+To generate a reproducible terms commitment, agree on an off-chain JSON document, then run:
+
+```bash
+python scripts/hash_terms.py agreement.json
+```
+
+The CLI uses sorted-key, compact UTF-8 JSON and prints the 32-byte SHA-256 digest as hex. Convert that digest to 32 bytes before passing it as `metadata_hash` to the Anchor instruction. Do not publish sensitive agreement details by default.
+
 **Important:** The client controls release. The contractor cannot withdraw unilaterally. This is a *client-authorized escrow prototype*, not a trustless arbitration or dispute-resolution protocol.
 
 ### Python API (read-only)
@@ -80,7 +88,7 @@ anchor test
 
 ## Current validation
 
-- Python: **29 pytest tests passing** in the build environment used to create this scaffold.
+- Python: **33 pytest tests passing** in the build environment used to create this scaffold.
 - Rust: 5 unit-test scenarios authored but **not executed** in that environment (Rust/cargo unavailable).
 - Anchor integration: local-validator scenarios authored but **not executed** in that environment (Anchor/Solana toolchains unavailable).
 - Deployment: none. Contract has not been audited. Do not use with real funds.
