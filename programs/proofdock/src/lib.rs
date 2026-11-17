@@ -11,7 +11,7 @@ use anchor_lang::system_program::{self, Transfer};
 
 // This is a development placeholder. Generate deployment keys and run
 // `anchor keys sync` before building for a cluster.
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("7SKDkm9iT9AAKA1jkx7vWZGZnHf33fN1iQscyDKdp9os");
 
 const MAX_ESCROW_DURATION_SECONDS: i64 = 365 * 24 * 60 * 60;
 
@@ -49,7 +49,7 @@ pub mod proofdock {
         // Crediting the program-owned escrow account is permitted.
         system_program::transfer(
             CpiContext::new(
-                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.system_program.key(),
                 Transfer {
                     from: ctx.accounts.client.to_account_info(),
                     to: ctx.accounts.escrow.to_account_info(),

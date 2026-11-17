@@ -7,12 +7,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-# Development placeholder. Run `anchor keys sync` before local build/deployment.
-proofdock = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+proofdock = "7SKDkm9iT9AAKA1jkx7vWZGZnHf33fN1iQscyDKdp9os"
 
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "npm run test:anchor"
+
+[hooks]
