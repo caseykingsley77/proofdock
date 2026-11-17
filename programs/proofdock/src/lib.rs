@@ -1,4 +1,4 @@
-//! ProofDock: one funded SOL escrow per client-defined milestone.
+//! ProofDock: funded SOL and SPL-token escrows per client-defined milestone.
 //!
 //! The client funds each escrow at creation. The client may release funds to
 //! the contractor, or reclaim them after a deadline. A released or refunded
@@ -8,6 +8,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{self, Transfer};
+use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, TransferChecked};
 
 // This is a development placeholder. Generate deployment keys and run
 // `anchor keys sync` before building for a cluster.
@@ -115,6 +116,163 @@ pub mod proofdock {
         });
         Ok(())
     }
+
+    /// Lock classic SPL tokens in a program-controlled vault.
+    /// The vault authority is the token escrow PDA, not the client wallet.
+    pub fn create_token_escrow(
+        ctx: Context<CreateTokenEscrow>,
+        id: u64,
+        amount: u64,
+        deadline: i64,
+        metadata_hash: [u8; 32],
+    ) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        validate_terms(amount, deadline, now)?;
+        require!(
+            ctx.accounts.client.key() != ctx.accounts.contractor.key(),
+            EscrowError::SameParties
+        );
+        require!(metadata_hash != [0; 32], EscrowError::EmptyMetadataHash);
+
+        let escrow = &mut ctx.accounts.token_escrow;
+        escrow.id = id;
+        escrow.client = ctx.accounts.client.key();
+        escrow.contractor = ctx.accounts.contractor.key();
+        escrow.mint = ctx.accounts.mint.key();
+        escrow.amount = amount;
+        escrow.deadline = deadline;
+        escrow.metadata_hash = metadata_hash;
+        escrow.bump = ctx.bumps.token_escrow;
+
+        token::transfer_checked(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                TransferChecked {
+                    from: ctx.accounts.client_token.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
+                    authority: ctx.accounts.client.to_account_info(),
+                },
+            ),
+            amount,
+            ctx.accounts.mint.decimals,
+        )?;
+
+        emit!(TokenEscrowCreated {
+            escrow: ctx.accounts.token_escrow.key(),
+            client: ctx.accounts.client.key(),
+            contractor: ctx.accounts.contractor.key(),
+            mint: ctx.accounts.mint.key(),
+            amount,
+        });
+        Ok(())
+    }
+
+    /// The client authorizes release of the vault's token balance.
+    /// Any unsolicited extra tokens deposited in the vault go to the contractor,
+    /// preventing a dust transfer from permanently blocking vault closure.
+    pub fn release_token_escrow(ctx: Context<ReleaseTokenEscrow>) -> Result<()> {
+        let amount = ctx.accounts.vault.amount;
+        let client_key = ctx.accounts.client.key();
+        let id_bytes = ctx.accounts.token_escrow.id.to_le_bytes();
+        let bump = [ctx.accounts.token_escrow.bump];
+        let signer_seeds: &[&[u8]] = &[
+            b"token-escrow",
+            client_key.as_ref(),
+            id_bytes.as_ref(),
+            &bump,
+        ];
+        let signer = &[signer_seeds];
+
+        token::transfer_checked(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                TransferChecked {
+                    from: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.contractor_token.to_account_info(),
+                    authority: ctx.accounts.token_escrow.to_account_info(),
+                },
+            )
+            .with_signer(signer),
+            amount,
+            ctx.accounts.mint.decimals,
+        )?;
+        token::close_account(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                CloseAccount {
+                    account: ctx.accounts.vault.to_account_info(),
+                    destination: ctx.accounts.client.to_account_info(),
+                    authority: ctx.accounts.token_escrow.to_account_info(),
+                },
+            )
+            .with_signer(signer),
+        )?;
+
+        emit!(TokenEscrowReleased {
+            escrow: ctx.accounts.token_escrow.key(),
+            client: client_key,
+            contractor: ctx.accounts.contractor.key(),
+            mint: ctx.accounts.mint.key(),
+            amount,
+        });
+        Ok(())
+    }
+
+    /// After the deadline, return the vault's complete balance to the client.
+    pub fn refund_expired_token_escrow(ctx: Context<RefundExpiredTokenEscrow>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            now >= ctx.accounts.token_escrow.deadline,
+            EscrowError::NotExpired
+        );
+        let amount = ctx.accounts.vault.amount;
+        let client_key = ctx.accounts.client.key();
+        let id_bytes = ctx.accounts.token_escrow.id.to_le_bytes();
+        let bump = [ctx.accounts.token_escrow.bump];
+        let signer_seeds: &[&[u8]] = &[
+            b"token-escrow",
+            client_key.as_ref(),
+            id_bytes.as_ref(),
+            &bump,
+        ];
+        let signer = &[signer_seeds];
+
+        token::transfer_checked(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                TransferChecked {
+                    from: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.client_token.to_account_info(),
+                    authority: ctx.accounts.token_escrow.to_account_info(),
+                },
+            )
+            .with_signer(signer),
+            amount,
+            ctx.accounts.mint.decimals,
+        )?;
+        token::close_account(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                CloseAccount {
+                    account: ctx.accounts.vault.to_account_info(),
+                    destination: ctx.accounts.client.to_account_info(),
+                    authority: ctx.accounts.token_escrow.to_account_info(),
+                },
+            )
+            .with_signer(signer),
+        )?;
+
+        emit!(TokenEscrowRefunded {
+            escrow: ctx.accounts.token_escrow.key(),
+            client: client_key,
+            mint: ctx.accounts.mint.key(),
+            amount,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -169,6 +327,139 @@ pub struct RefundExpired<'info> {
         bump = escrow.bump,
     )]
     pub escrow: Account<'info, Escrow>,
+}
+
+/// Account constraints ensure the client owns the source tokens and that
+/// the vault is controlled exclusively by the escrow PDA.
+#[derive(Accounts)]
+#[instruction(id: u64)]
+pub struct CreateTokenEscrow<'info> {
+    #[account(mut)]
+    pub client: Signer<'info>,
+    pub contractor: SystemAccount<'info>,
+    pub mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = client,
+    )]
+    pub client_token: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = client,
+        space = 8 + TokenEscrow::INIT_SPACE,
+        seeds = [b"token-escrow", client.key().as_ref(), &id.to_le_bytes()],
+        bump,
+    )]
+    pub token_escrow: Account<'info, TokenEscrow>,
+    #[account(
+        init,
+        payer = client,
+        token::mint = mint,
+        token::authority = token_escrow,
+        seeds = [b"token-vault", token_escrow.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ReleaseTokenEscrow<'info> {
+    #[account(mut)]
+    pub client: Signer<'info>,
+    pub contractor: SystemAccount<'info>,
+    #[account(address = token_escrow.mint)]
+    pub mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        has_one = client,
+        has_one = contractor,
+        has_one = mint,
+        close = client,
+        seeds = [b"token-escrow", client.key().as_ref(), &token_escrow.id.to_le_bytes()],
+        bump = token_escrow.bump,
+    )]
+    pub token_escrow: Account<'info, TokenEscrow>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = token_escrow,
+        seeds = [b"token-vault", token_escrow.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = mint, token::authority = contractor)]
+    pub contractor_token: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct RefundExpiredTokenEscrow<'info> {
+    #[account(mut)]
+    pub client: Signer<'info>,
+    #[account(address = token_escrow.mint)]
+    pub mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        has_one = client,
+        has_one = mint,
+        close = client,
+        seeds = [b"token-escrow", client.key().as_ref(), &token_escrow.id.to_le_bytes()],
+        bump = token_escrow.bump,
+    )]
+    pub token_escrow: Account<'info, TokenEscrow>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = token_escrow,
+        seeds = [b"token-vault", token_escrow.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = mint, token::authority = client)]
+    pub client_token: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct TokenEscrow {
+    pub id: u64,
+    pub client: Pubkey,
+    pub contractor: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub deadline: i64,
+    pub metadata_hash: [u8; 32],
+    pub bump: u8,
+}
+
+#[event]
+pub struct TokenEscrowCreated {
+    pub escrow: Pubkey,
+    pub client: Pubkey,
+    pub contractor: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct TokenEscrowReleased {
+    pub escrow: Pubkey,
+    pub client: Pubkey,
+    pub contractor: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct TokenEscrowRefunded {
+    pub escrow: Pubkey,
+    pub client: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
 }
 
 #[account]
@@ -234,7 +525,10 @@ fn validate_terms(amount: u64, deadline: i64, now: i64) -> Result<()> {
     let duration = deadline
         .checked_sub(now)
         .ok_or(EscrowError::ExcessiveDuration)?;
-    require!(duration <= MAX_ESCROW_DURATION_SECONDS, EscrowError::ExcessiveDuration);
+    require!(
+        duration <= MAX_ESCROW_DURATION_SECONDS,
+        EscrowError::ExcessiveDuration
+    );
     Ok(())
 }
 
