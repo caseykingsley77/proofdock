@@ -1,0 +1,81 @@
+name: Solana Anchor local-validator integration
+
+on:
+  pull_request:
+    paths:
+      - "Anchor.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "programs/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/anchor-integration.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Anchor.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "programs/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/anchor-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  local-validator:
+    name: Anchor 1.2.1 / Solana 4.1.2 escrow lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libudev-dev libclang-dev protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install TypeScript test dependencies
+        run: npm ci
+
+      - name: Install Solana CLI
+        shell: bash
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v4.1.2/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/otter-sec/anchor --tag v1.2.1 anchor-cli --locked
+
+      - name: Create ephemeral localnet wallet and program keypair
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/solana" target/deploy
+          solana-keygen new --no-bip39-passphrase --silent --force -o "$HOME/.config/solana/id.json"
+          solana-keygen new --no-bip39-passphrase --silent --force -o target/deploy/proofdock-keypair.json
+          solana config set --url localhost
+          anchor keys sync
+
+      - name: Verify tool versions
+        run: |
+          rustc --version
+          node --version
+          solana --version
+          anchor --version
+
+      - name: Run real validator escrow tests
+        run: anchor test --validator legacy
