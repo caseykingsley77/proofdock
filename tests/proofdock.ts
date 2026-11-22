@@ -118,6 +118,112 @@ describe("proofdock SOL milestone escrow", () => {
     expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
   });
 
+  it("rejects redirecting a payout to a different contractor", async () => {
+    const { escrow } = await create();
+    const impostor = Keypair.generate();
+    await airdrop(provider, impostor.publicKey);
+    const before = await provider.connection.getBalance(impostor.publicKey);
+    let rejected = false;
+    try {
+      await program.methods.release().accounts({
+        client: provider.wallet.publicKey,
+        contractor: impostor.publicKey,
+        escrow,
+      }).rpc();
+    } catch (_) {
+      rejected = true;
+    }
+    expect(rejected, "only the stored contractor may receive payout").to.equal(true);
+    expect(await provider.connection.getBalance(impostor.publicKey)).to.equal(before);
+    expect(await provider.connection.getAccountInfo(escrow)).to.not.equal(null);
+  });
+
+  it("blocks an unauthorized refund even after expiry", async () => {
+    const { escrow } = await create(3);
+    const attacker = Keypair.generate();
+    await airdrop(provider, attacker.publicKey);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    let rejected = false;
+    try {
+      await program.methods.refundExpired().accounts({
+        client: attacker.publicKey,
+        escrow,
+      }).signers([attacker]).rpc();
+    } catch (_) {
+      rejected = true;
+    }
+    expect(rejected, "only the escrow client may request a refund").to.equal(true);
+    expect(await provider.connection.getAccountInfo(escrow)).to.not.equal(null);
+  });
+
+  it("rejects a duplicate active milestone without changing its funds", async () => {
+    const { escrow, contractor, id, amount, deadline } = await create();
+    const balanceBefore = await provider.connection.getBalance(escrow);
+    let rejected = false;
+    try {
+      await program.methods.createEscrow(
+        id, amount, deadline,
+        Array.from(createHash("sha256").update("duplicate-terms").digest()),
+      ).accounts({
+        client: provider.wallet.publicKey,
+        contractor: contractor.publicKey,
+        escrow,
+        systemProgram: SystemProgram.programId,
+      }).rpc();
+    } catch (_) {
+      rejected = true;
+    }
+    expect(rejected, "one active (client, milestone) PDA only").to.equal(true);
+    expect(await provider.connection.getBalance(escrow)).to.equal(balanceBefore);
+    const data = await program.account.escrow.fetch(escrow);
+    expect(data.amount.toString()).to.equal(amount.toString());
+  });
+
+  it("cannot release an escrow twice after closing it", async () => {
+    const { escrow, contractor } = await create();
+    await program.methods.release().accounts({
+      client: provider.wallet.publicKey,
+      contractor: contractor.publicKey,
+      escrow,
+    }).rpc();
+    expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
+    let rejected = false;
+    try {
+      await program.methods.release().accounts({
+        client: provider.wallet.publicKey,
+        contractor: contractor.publicKey,
+        escrow,
+      }).rpc();
+    } catch (_) {
+      rejected = true;
+    }
+    expect(rejected, "closed escrows cannot be paid again").to.equal(true);
+  });
+
+  it("rejects a blank terms commitment", async () => {
+    const contractor = Keypair.generate();
+    await airdrop(provider, contractor.publicKey);
+    const id = new anchor.BN(randomBytes(6).readUIntBE(0, 6));
+    const escrow = escrowPda(provider.wallet.publicKey, id, program.programId);
+    let rejected = false;
+    try {
+      await program.methods.createEscrow(
+        id, new anchor.BN(100_000),
+        new anchor.BN(Math.floor(Date.now() / 1000) + 3600),
+        Array(32).fill(0),
+      ).accounts({
+        client: provider.wallet.publicKey,
+        contractor: contractor.publicKey,
+        escrow,
+        systemProgram: SystemProgram.programId,
+      }).rpc();
+    } catch (_) {
+      rejected = true;
+    }
+    expect(rejected, "zero metadata hash is invalid").to.equal(true);
+    expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
+  });
+
   it("rejects a zero-value escrow", async () => {
     const contractor = Keypair.generate();
     await airdrop(provider, contractor.publicKey);
