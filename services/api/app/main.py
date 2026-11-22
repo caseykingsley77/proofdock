@@ -10,7 +10,8 @@ from .base58 import validate_pubkey
 from .codec import decode_escrow
 from .rpc import RpcError, SolanaRpc
 
-DEV_PROGRAM_ID = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+# Keep this placeholder aligned with Anchor.toml and Rust declare_id!.
+DEV_PROGRAM_ID = "7SKDkm9iT9AAKA1jkx7vWZGZnHf33fN1iQscyDKdp9os"
 
 
 class EscrowResponse(BaseModel):

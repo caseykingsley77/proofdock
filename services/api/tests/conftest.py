@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.codec import ESCROW_DISCRIMINATOR, ESCROW_LAYOUT
-from app.main import app
+from app.main import DEV_PROGRAM_ID, app
 
 CLIENT_BYTES = bytes(range(1, 33))
 CONTRACTOR_BYTES = bytes(range(33, 65))
@@ -26,7 +26,7 @@ def account_data() -> bytes:
 def rpc_account(account_data):
     return {
         "data": [base64.b64encode(account_data).decode("ascii"), "base64"],
-        "owner": "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS",
+        "owner": DEV_PROGRAM_ID,
         "lamports": 5_001_000,
         "executable": False,
         "rentEpoch": 0,
