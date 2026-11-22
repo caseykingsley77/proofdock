@@ -78,4 +78,4 @@ jobs:
           anchor --version
 
       - name: Run real validator escrow tests
-        run: anchor test --validator solana-test-validator
+        run: anchor test --validator legacy
