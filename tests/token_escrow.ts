@@ -29,9 +29,9 @@ function tokenInstruction(data: Buffer, keys: Array<{pubkey: PublicKey; isSigner
 
 function initMint(mint: PublicKey, authority: PublicKey): TransactionInstruction {
   // Classic TokenInstruction.InitializeMint = 0, decimals = 0,
-  // freeze-authority COption = None (four zero bytes).
+  // freeze-authority COption = None (one zero byte).
   return tokenInstruction(Buffer.concat([
-    Buffer.from([0, 0]), authority.toBuffer(), Buffer.alloc(4),
+    Buffer.from([0, 0]), authority.toBuffer(), Buffer.from([0]),
   ]), [
     { pubkey: mint, isSigner: false, isWritable: true },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
