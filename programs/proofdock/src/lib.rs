@@ -736,7 +736,7 @@ fn settle_token_vault<'info>(
     if pay_contractor {
         token::transfer_checked(
             CpiContext::new(
-                token_program.clone(),
+                token_program.key(),
                 TransferChecked {
                     from: vault.clone(),
                     mint: mint.clone(),
@@ -753,7 +753,7 @@ fn settle_token_vault<'info>(
     if client_amount > 0 {
         token::transfer_checked(
             CpiContext::new(
-                token_program.clone(),
+                token_program.key(),
                 TransferChecked {
                     from: vault.clone(),
                     mint: mint.clone(),
@@ -768,7 +768,7 @@ fn settle_token_vault<'info>(
     }
     token::close_account(
         CpiContext::new(
-            token_program,
+            token_program.key(),
             CloseAccount {
                 account: vault,
                 destination: client,
