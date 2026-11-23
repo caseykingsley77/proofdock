@@ -1,62 +1,53 @@
-# Architecture and invariants
+# Architecture and accounting invariants
 
-## Responsibilities
+> Development-only contract, not audited or deployed with production funds.
+> This revision changes the SOL escrow account layout and instruction signatures; it is incompatible with old on-chain accounts and SDKs. No migration strategy has been implemented.
 
-1. **Wallet/client**: selects contractor, milestone ID, terms hash, funding amount, and deadline; signs instructions.
-2. **Anchor program**: validates signer ownership and PDA seeds; holds lamports; releases or refunds them atomically.
-3. **Python API**: reads accounts from a configured RPC endpoint, validates owner/discriminator/layout, and returns JSON. It never signs transactions or controls funds.
-4. **Solana RPC**: authoritative current account data; not necessarily complete event history.
+## Roles and consent
 
-## PDA and account layout
+- **Client**: funds escrow, may voluntarily release funds, can file a dispute.
+- **Contractor**: signs creation to accept the arbitrator, can file a dispute, co-signs ordinary expiry refunds.
+- **Arbitrator**: independent, nonzero public key selected at creation by the client's and contractor's signed transaction. Cannot be a party. Can decide where escrow funds go **only after a dispute**. The arbitrator signs the resolution instruction, choosing contractor payout or refund to client.
+- **Anchor program**: escrow authority and accounting.
+- **Python API**: read-only inspection of current funded/disputed SOL escrows; holds no keys.
 
-```
-PDA seeds: [b"escrow", client_pubkey, milestone_id_u64_le]
+A non-disputed SOL or classic SPL-token escrow is released by the original client. An ordinary expiry refund requires signatures of **both original parties** and is blocked when a dispute is active. Either party can open a dispute at any time while the escrow exists, including after expiry. Once disputed, ordinary release/refund is frozen. Only the accepted arbitrator may resolve it, and settlement closes the account. Arbitration is all-or-nothing for each escrow, not a partial-payment system.
 
-Escrow account: 129 bytes total
-offset  size  type                 field
-  0      8   Anchor discriminator SHA256("account:Escrow")[:8]
-  8      8   u64 little-endian     id
- 16     32   Pubkey                client
- 48     32   Pubkey                contractor
- 80      8   u64 little-endian     amount
- 88      8   i64 little-endian     deadline
- 96     32   bytes                 metadata_hash
-128      1   u8                    bump
-```
+**Important liveness limitation:** A missing/uncooperative arbitrator can leave funds locked indefinitely after a dispute, and absent contractor consent can block ordinary expiry refunds. A key compromise or colluding arbitrator can choose an unfair verdict. Production work needs arbitration governance, replacement/recovery mechanisms, dispute evidence rules, timelocks and professional audit.
 
-The Rust `InitSpace` calculation and Python `struct.Struct('<Q32s32sQq32sB')` must remain aligned. The Python API queries memcmp at offset **16** (client pubkey) plus dataSize **129**.
+## SOL escrow PDA and account layout
 
-## Escrow invariants
+PDA: `[b"escrow", client_pubkey, milestone_id_u64_le]`. Account format uses Anchor's eight-byte discriminator plus:
 
-- Positive deposited amount; client and contractor are distinct system-owned wallets.
-- Future deadline, no more than 365 days after creation.
-- Nonzero SHA-256 terms hash (the off-chain document is **not** available or authenticated by the program; parties must separately agree on what was hashed).
-- No two active escrows can share one `(client, milestone_id)` PDA.
-- The original client is the only authority allowed to release or refund, verified with `has_one` and `Signer` constraints.
-- Releasing sends precisely the recorded `amount` to the recorded contractor; remaining rent is returned to the client at close.
-- Refund requires `Clock.unix_timestamp >= deadline`; the account's SOL deposit and rent are returned to the client on close.
-- A single successful settlement closes the account. Subsequent release/refund attempts fail because the account no longer exists.
+| Offset | Bytes | Field |
+| ---: | ---: | --- |
+| 0 | 8 | `Escrow` discriminator |
+| 8 | 8 | Milestone ID (u64 LE) |
+| 16 | 32 | Client public key |
+| 48 | 32 | Contractor public key |
+| 80 | 32 | Arbitrator public key |
+| 112 | 8 | Agreed lamports (u64 LE) |
+| 120 | 8 | Deadline (i64 LE) |
+| 128 | 32 | SHA-256 terms commitment |
+| 160 | 1 | Disputed flag (bool) |
+| 161 | 1 | PDA bump (u8) |
 
-## Threat model and limitations
+**162 bytes total.** The Python `ESCROW_LAYOUT` must match this layout. The client memcmp offset remains 16.
 
-| Concern | Control | Remaining risk |
-| --- | --- | --- |
-| Impersonated client | `Signer` + `has_one = client` | Client wallet compromise |
-| Substitute contractor | `address = escrow.contractor` | User can choose an unintended address at creation |
-| Forged PDA | Program seeds + stored bump | Program-upgrade authority risk not addressed |
-| Overflow/underflow | `checked_add` / `checked_sub` | On-chain tests not yet executed |
-| Front-running / replay | Unique `(client,id)` address, init fails for occupied PDA | IDs can be reused after close; no historical registry |
-| False API accounts | RPC `owner` + account discriminator + exact length | Trust in RPC provider for freshness/completeness |
-| Release disputes | Client is sole release authority | Contractor has no appeal or arbitration mechanism |
-| Confidential data | Store only hash | Terms can still leak off-chain; hash is not encryption |
+## Token payout invariants
 
-No program upgrade governance, key management, on-chain arbitration, token-based settlement, or independent audit is included in this prototype. There is no mainnet deployment claim.
+- Classic SPL Token Program only; Token-2022 extensions are not supported or audited.
+- Vault PDA is controlled by the token escrow PDA.
+- `token_escrow.amount` is the **maximum contractor payout** in a full contractor-favoring settlement, regardless of unsolicited extra deposits. `vault.amount` must be at least the agreed amount or settlement fails.
+- On contractor release or contractor-favoring arbitration, send **exactly the agreed amount** to the bound contractor token account. Any remaining vault balance goes to the client's validated token account.
+- On ordinary refund or client-favoring arbitration, send the **entire vault balance** to the client's validated token account.
+- After a successful settlement, close the vault and token escrow, returning rent to client.
+- Extra deposit provenance is not tracked; unsolicited third-party token deposits end up with the client on settlement. This is an explicit limitation, not fair donor restitution.
+- All operations are atomic Solana transactions; a token transfer/closure failure reverts settlement.
 
-## Future enhancements
+## Other limitations
 
-- Separate escrow-vault authority PDA and immutable agreement registry for non-reusable IDs.
-- Multi-milestone projects and partial release balances.
-- Independent arbitrator or mutually signed refund cancellation.
-- SPL Token/Token-2022 payments through `anchor-spl` token interfaces.
-- WebSocket or log ingestion to track closed accounts and historic transactions.
-- Devnet demo with transaction signatures, explorer links and screenshots.
+- Account closure makes previously used `(client,id)` escrow addresses reusable; historical identity needs transaction signature/slot, not just PDA.
+- Metadata hashes do not prove deliverable completion or encrypt off-chain agreements.
+- Read-only API cannot prove full historical events or guarantee up-to-date RPC responses.
+- Upgrade authority, identity verification, arbitration policy, dispute evidence and custody remain unaudited.

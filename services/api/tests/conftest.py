@@ -10,6 +10,7 @@ from app.main import DEV_PROGRAM_ID, app
 
 CLIENT_BYTES = bytes(range(1, 33))
 CONTRACTOR_BYTES = bytes(range(33, 65))
+ARBITRATOR_BYTES = bytes(range(100, 132))
 ACCOUNT_BYTES = bytes(range(65, 97))
 PROGRAM_BYTES = bytes(range(100, 132))
 
@@ -17,8 +18,9 @@ PROGRAM_BYTES = bytes(range(100, 132))
 @pytest.fixture
 def account_data() -> bytes:
     return ESCROW_DISCRIMINATOR + ESCROW_LAYOUT.pack(
-        77, CLIENT_BYTES, CONTRACTOR_BYTES, 5_000_000, 1_805_000_000,
-        bytes.fromhex("a7" * 32), 251,
+        77, CLIENT_BYTES, CONTRACTOR_BYTES, ARBITRATOR_BYTES,
+        5_000_000, 1_805_000_000,
+        bytes.fromhex("a7" * 32), False, 251,
     )
 
 

@@ -1,33 +1,21 @@
-# Solana escrow security review — 2026-11-22
+# Escrow security review — original 2026-11-22 observations and 2026-11-23 proposal
 
-Scope: source-level review of `programs/proofdock/src/lib.rs`, the `tests/proofdock.ts` local-validator suite, and CI configuration. **Not an independent audit.** Observations below are code review findings, not proof that integration tests have passed.
+**The original review predated these changes.** This file records the initial risks and their proposed mitigations on the new PR branch. Tests and CI must pass before considering these verified, and this is **not an independent audit**.
 
-## Implemented protections
+## Changes proposed in this branch
 
-- SOL `release` requires the original client signer (`has_one = client` and escrow PDA seeds) and binds the payout wallet to `escrow.contractor`.
-- SOL `refund_expired` requires the original client and a clock timestamp at or after the recorded deadline.
-- `init` of a PDA keyed by `["escrow", client, id]` prevents opening a second *active* SOL escrow for that key. Once the PDA is closed, the ID can be reused. Do not treat ID uniqueness as permanent history.
-- SOL release uses checked arithmetic and closes the account; refund closes the account after expiry.
-- SPL token settlement uses an escrow PDA signer, enforces mint/authority relationships, and closes the vault after settlement.
+1. **Client-controlled settlement:** On new escrows, the contractor must sign creation, agreeing to an independent arbitrator. Either party can flag an escrow as disputed, blocking ordinary settlement. The agreed arbitrator can resolve a disputed SOL or SPL escrow in either party's favor, without client permission. Ordinary expiry refunds require both original party signatures. This addresses unilateral client withholding/refund at the cost of relying on arbitrator availability and trust.
+2. **Token surplus payouts:** Contractor payouts use the recorded `token_escrow.amount` rather than `vault.amount`. The balance must cover the agreed amount. Extra deposited tokens are returned to the original client, and the vault closes. Refunds send the full vault balance to the client. The original donor of extra token transfers is not tracked.
+3. **Regression tests:** Add successful and unauthorized SOL dispute tests, token dispute resolutions, exact payout and surplus cases, and jointly signed refunds. All still require CI validation against a real local validator.
 
-## Outstanding findings and test gaps
+## Remaining risks / gaps
 
-1. **High — Client-controlled settlement; no contractor dispute path.** Client can choose not to release a completed milestone and can refund after the deadline. This is a product-level trust assumption, not an access-control bug. Define an arbitration or mutual-consent model before production use.
-2. **Medium — SPL token settlement transfers `vault.amount`, not `token_escrow.amount`.** Additional tokens transferred into the vault are sent to the contractor on release, or back to the client on refund, even when more than the agreed amount was funded. The code documents this as dust-recovery behavior needed for vault closure. Make this explicit in the protocol and test unsolicited deposits before relying on the invariant “exact payout amount.” Consider a separate surplus-handling design if exact amount is required.
-3. **Medium — SPL token lifecycle coverage is partial and not yet confirmed passing.** The new `tests/token_escrow.ts` includes mint setup, funded vault release, wrong payout destination, early and expired refund, and unsolicited-extra-token cases. Still add separate wrong-mint, unauthorized signer, token-delegate and mint-freeze cases, and verify all tests with a successful local-validator CI run.
-4. **Medium — Program upgrade authority and deployment keys are not governed.** Development program ID is a placeholder. Local CI creates ephemeral keys and does not establish safe deployment or immutability. Document authority management and run a professional audit before holding funds.
-5. **Low — Historical escrow IDs can be reused after closure.** PDA-derived uniqueness exists only while the old account is active. An indexer must disambiguate historical records by transaction/signature/slot, not just `(client, id)`.
-6. **Low — Deadline test uses wall-clock wait.** The existing three-second expiry test sleeps for five seconds. This can be flaky if validator time differs or the runner is overloaded; use validator clock manipulation or a generous duration when expanding coverage.
+- **High — Arbitration liveness and trust:** Arbitrator loss/unavailability, coercion, collusion and ambiguous evidence can still lock or misdirect funds. There is no arbitrator rotation, backup or appeal.
+- **High — Breaking upgrade:** Escrow state size, creation instruction payload and expiry refund account lists changed. Existing escrow accounts and clients are not compatible; no migration or upgrade path is implemented.
+- **Medium — Unattributed deposits:** Extra SPL vault tokens are returned to client even if sent by a third party. The contract cannot attribute donors.
+- **Medium — Token compatibility:** Classic SPL only; Token-2022, transfer hooks, fees, freeze authorities and malicious/unsupported mints need a separate threat model.
+- **Medium — No production governance:** Program upgrade authority management, deployment policy, signing keys and independent audit not completed.
+- **Low — Historical key reuse:** Escrow accounts close, permitting reuse of (client, id) PDA. Indexers need tx signature/slot.
+- **Low — Wall-clock integration tests:** Expiration tests sleep on validator wall time and can be flaky in busy CI.
 
-## Regression coverage added in the test branch
-
-- Reject release by another signer.
-- Reject substituted contractor payout address.
-- Reject refund by another signer, including after expiry.
-- Reject duplicate active milestone and preserve funds.
-- Reject a repeated release after account closure.
-- Reject blank metadata commitment and zero escrow value.
-
-The dedicated GitHub Actions workflow installs Anchor and Solana CLI, generates local disposable keypairs, and invokes `anchor test --validator legacy` against `solana-test-validator`. **Passing Rust unit tests alone does not establish a passing on-chain validator run.** Keep any PR unmerged until the validator job passes, or explicitly document unresolved blockers.
-
-No production funds should be used with this prototype.
+No real funds should be used with this prototype. A green CI suite tests specified scenarios only and is not an audit.

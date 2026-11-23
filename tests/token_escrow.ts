@@ -76,6 +76,7 @@ describe("proofdock classic SPL token escrow on local validator", () => {
 
   async function fixture(deadlineOffsetSeconds = 3600) {
     const contractor = Keypair.generate();
+    const arbitrator = Keypair.generate();
     const mint = Keypair.generate();
     const clientToken = Keypair.generate();
     const contractorToken = Keypair.generate();
@@ -117,15 +118,15 @@ describe("proofdock classic SPL token escrow on local validator", () => {
       [Buffer.from("token-vault"), tokenEscrow.toBuffer()], program.programId,
     )[0];
 
-    await program.methods.createTokenEscrow(id, amount, deadline, metadataHash)
+    await program.methods.createTokenEscrow(id, amount, deadline, metadataHash, arbitrator.publicKey)
       .accounts({
         client, contractor: contractor.publicKey,
         mint: mint.publicKey, clientToken: clientToken.publicKey,
         tokenEscrow, vault, tokenProgram: TOKEN_PROGRAM,
         systemProgram: SystemProgram.programId,
-      }).rpc();
+      }).signers([contractor]).rpc();
     return {
-      contractor, mint: mint.publicKey, clientToken: clientToken.publicKey,
+      contractor, arbitrator, mint: mint.publicKey, clientToken: clientToken.publicKey,
       contractorToken: contractorToken.publicKey, tokenEscrow, vault,
     };
   }
@@ -137,7 +138,7 @@ describe("proofdock classic SPL token escrow on local validator", () => {
     await program.methods.releaseTokenEscrow().accounts({
       client, contractor: f.contractor.publicKey, mint: f.mint,
       tokenEscrow: f.tokenEscrow, vault: f.vault,
-      contractorToken: f.contractorToken, tokenProgram: TOKEN_PROGRAM,
+      contractorToken: f.contractorToken, clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
     }).rpc();
     expect(await balance(f.contractorToken)).to.equal(ESCROW_TOKENS);
     expect(await provider.connection.getAccountInfo(f.vault)).to.equal(null);
@@ -151,7 +152,7 @@ describe("proofdock classic SPL token escrow on local validator", () => {
       await program.methods.releaseTokenEscrow().accounts({
         client, contractor: f.contractor.publicKey, mint: f.mint,
         tokenEscrow: f.tokenEscrow, vault: f.vault,
-        contractorToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
+        contractorToken: f.clientToken, clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
       }).rpc();
     } catch (_) { failed = true; }
     expect(failed, "the contractor must own the payout token account").to.equal(true);
@@ -164,22 +165,22 @@ describe("proofdock classic SPL token escrow on local validator", () => {
     let failed = false;
     try {
       await program.methods.refundExpiredTokenEscrow().accounts({
-        client, mint: f.mint, tokenEscrow: f.tokenEscrow,
+        client, contractor: f.contractor.publicKey, mint: f.mint, tokenEscrow: f.tokenEscrow,
         vault: f.vault, clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
-      }).rpc();
+      }).signers([f.contractor]).rpc();
     } catch (_) { failed = true; }
     expect(failed, "an unexpired escrow cannot be refunded").to.equal(true);
     await new Promise((resolve) => setTimeout(resolve, 5000));
     await program.methods.refundExpiredTokenEscrow().accounts({
-      client, mint: f.mint, tokenEscrow: f.tokenEscrow,
+      client, contractor: f.contractor.publicKey, mint: f.mint, tokenEscrow: f.tokenEscrow,
       vault: f.vault, clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
-    }).rpc();
+    }).signers([f.contractor]).rpc();
     expect(await balance(f.clientToken)).to.equal(INITIAL_TOKENS);
     expect(await provider.connection.getAccountInfo(f.vault)).to.equal(null);
     expect(await provider.connection.getAccountInfo(f.tokenEscrow)).to.equal(null);
   });
 
-  it("documents that unsolicited extra vault tokens follow the full-balance release policy", async () => {
+  it("returns unsolicited extra vault tokens to the client, not the contractor", async () => {
     const f = await fixture();
     const extra = 25_000;
     await provider.sendAndConfirm(new Transaction().add(
@@ -189,9 +190,79 @@ describe("proofdock classic SPL token escrow on local validator", () => {
     await program.methods.releaseTokenEscrow().accounts({
       client, contractor: f.contractor.publicKey, mint: f.mint,
       tokenEscrow: f.tokenEscrow, vault: f.vault,
-      contractorToken: f.contractorToken, tokenProgram: TOKEN_PROGRAM,
+      contractorToken: f.contractorToken, clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
     }).rpc();
-    expect(await balance(f.contractorToken)).to.equal(ESCROW_TOKENS + extra);
+    expect(await balance(f.contractorToken)).to.equal(ESCROW_TOKENS);
+    expect(await balance(f.clientToken)).to.equal(INITIAL_TOKENS - ESCROW_TOKENS);
+    expect(await provider.connection.getAccountInfo(f.vault)).to.equal(null);
+  });
+
+  it("allows the agreed arbitrator to pay the contractor after a token dispute", async () => {
+    const f = await fixture();
+    await program.methods.disputeTokenEscrow().accounts({
+      party: f.contractor.publicKey, tokenEscrow: f.tokenEscrow,
+    }).signers([f.contractor]).rpc();
+    expect((await program.account.tokenEscrow.fetch(f.tokenEscrow)).disputed).to.equal(true);
+    let blocked = false;
+    try {
+      await program.methods.releaseTokenEscrow().accounts({
+        client, contractor: f.contractor.publicKey, mint: f.mint,
+        tokenEscrow: f.tokenEscrow, vault: f.vault,
+        contractorToken: f.contractorToken, clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
+      }).rpc();
+    } catch (_) { blocked = true; }
+    expect(blocked).to.equal(true);
+    await program.methods.resolveTokenDispute(true).accounts({
+      arbitrator: f.arbitrator.publicKey, client, contractor: f.contractor.publicKey,
+      mint: f.mint, tokenEscrow: f.tokenEscrow, vault: f.vault,
+      contractorToken: f.contractorToken, clientToken: f.clientToken,
+      tokenProgram: TOKEN_PROGRAM,
+    }).signers([f.arbitrator]).rpc();
+    expect(await balance(f.contractorToken)).to.equal(ESCROW_TOKENS);
+    expect(await provider.connection.getAccountInfo(f.vault)).to.equal(null);
+    expect(await provider.connection.getAccountInfo(f.tokenEscrow)).to.equal(null);
+  });
+
+  it("rejects an unapproved arbitrator and allows a token dispute refund", async () => {
+    const f = await fixture();
+    await program.methods.disputeTokenEscrow().accounts({
+      party: client, tokenEscrow: f.tokenEscrow,
+    }).rpc();
+    const impostor = Keypair.generate();
+    let blocked = false;
+    try {
+      await program.methods.resolveTokenDispute(false).accounts({
+        arbitrator: impostor.publicKey, client, contractor: f.contractor.publicKey,
+        mint: f.mint, tokenEscrow: f.tokenEscrow, vault: f.vault,
+        contractorToken: f.contractorToken, clientToken: f.clientToken,
+        tokenProgram: TOKEN_PROGRAM,
+      }).signers([impostor]).rpc();
+    } catch (_) { blocked = true; }
+    expect(blocked).to.equal(true);
+    await program.methods.resolveTokenDispute(false).accounts({
+      arbitrator: f.arbitrator.publicKey, client, contractor: f.contractor.publicKey,
+      mint: f.mint, tokenEscrow: f.tokenEscrow, vault: f.vault,
+      contractorToken: f.contractorToken, clientToken: f.clientToken,
+      tokenProgram: TOKEN_PROGRAM,
+    }).signers([f.arbitrator]).rpc();
+    expect(await balance(f.clientToken)).to.equal(INITIAL_TOKENS);
+    expect(await balance(f.contractorToken)).to.equal(0);
+  });
+
+  it("returns extra vault deposits on a jointly approved expiry refund", async () => {
+    const f = await fixture(3);
+    const extra = 25_000;
+    await provider.sendAndConfirm(new Transaction().add(
+      transferTokens(f.clientToken, f.vault, client, extra),
+    ), []);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await program.methods.refundExpiredTokenEscrow().accounts({
+      client, contractor: f.contractor.publicKey, mint: f.mint,
+      tokenEscrow: f.tokenEscrow, vault: f.vault,
+      clientToken: f.clientToken, tokenProgram: TOKEN_PROGRAM,
+    }).signers([f.contractor]).rpc();
+    expect(await balance(f.clientToken)).to.equal(INITIAL_TOKENS);
+    expect(await balance(f.contractorToken)).to.equal(0);
     expect(await provider.connection.getAccountInfo(f.vault)).to.equal(null);
   });
 });

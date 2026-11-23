@@ -33,6 +33,7 @@ describe("proofdock SOL milestone escrow", () => {
 
   async function create(deadlineOffsetSeconds = 3600) {
     const contractor = Keypair.generate();
+    const arbitrator = Keypair.generate();
     await airdrop(provider, contractor.publicKey);
     const id = new anchor.BN(randomBytes(6).readUIntBE(0, 6));
     const amount = new anchor.BN(100_000);
@@ -40,15 +41,15 @@ describe("proofdock SOL milestone escrow", () => {
     const metadataHash = Array.from(createHash("sha256").update("deliverable-v1").digest());
     const escrow = escrowPda(provider.wallet.publicKey, id, program.programId);
 
-    await program.methods.createEscrow(id, amount, deadline, metadataHash)
+    await program.methods.createEscrow(id, amount, deadline, metadataHash, arbitrator.publicKey)
       .accounts({
         client: provider.wallet.publicKey,
         contractor: contractor.publicKey,
         escrow,
         systemProgram: SystemProgram.programId,
       })
-      .rpc();
-    return { escrow, contractor, id, amount, deadline };
+      .signers([contractor]).rpc();
+    return { escrow, contractor, arbitrator, id, amount, deadline };
   }
 
   it("creates an escrow with the correct PDA and state", async () => {
@@ -93,13 +94,14 @@ describe("proofdock SOL milestone escrow", () => {
   });
 
   it("does not refund a funded escrow before expiry", async () => {
-    const { escrow } = await create(3600);
+    const { escrow, contractor } = await create(3600);
     let rejected = false;
     try {
       await program.methods.refundExpired().accounts({
         client: provider.wallet.publicKey,
+        contractor: contractor.publicKey,
         escrow,
-      }).rpc();
+      }).signers([contractor]).rpc();
     } catch (error) {
       rejected = true;
       expect(String(error)).to.match(/NotExpired|not reached its deadline/i);
@@ -108,13 +110,14 @@ describe("proofdock SOL milestone escrow", () => {
   });
 
   it("refunds the client and closes an expired escrow", async () => {
-    const { escrow } = await create(3);
+    const { escrow, contractor } = await create(3);
     // Local-validator time is approximately wall time; allow it to advance.
     await new Promise((resolve) => setTimeout(resolve, 5000));
     await program.methods.refundExpired().accounts({
       client: provider.wallet.publicKey,
+      contractor: contractor.publicKey,
       escrow,
-    }).rpc();
+    }).signers([contractor]).rpc();
     expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
   });
 
@@ -139,7 +142,7 @@ describe("proofdock SOL milestone escrow", () => {
   });
 
   it("blocks an unauthorized refund even after expiry", async () => {
-    const { escrow } = await create(3);
+    const { escrow, contractor } = await create(3);
     const attacker = Keypair.generate();
     await airdrop(provider, attacker.publicKey);
     await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -147,8 +150,9 @@ describe("proofdock SOL milestone escrow", () => {
     try {
       await program.methods.refundExpired().accounts({
         client: attacker.publicKey,
+        contractor: contractor.publicKey,
         escrow,
-      }).signers([attacker]).rpc();
+      }).signers([attacker, contractor]).rpc();
     } catch (_) {
       rejected = true;
     }
@@ -157,19 +161,20 @@ describe("proofdock SOL milestone escrow", () => {
   });
 
   it("rejects a duplicate active milestone without changing its funds", async () => {
-    const { escrow, contractor, id, amount, deadline } = await create();
+    const { escrow, contractor, arbitrator, id, amount, deadline } = await create();
     const balanceBefore = await provider.connection.getBalance(escrow);
     let rejected = false;
     try {
       await program.methods.createEscrow(
         id, amount, deadline,
         Array.from(createHash("sha256").update("duplicate-terms").digest()),
+        arbitrator.publicKey,
       ).accounts({
         client: provider.wallet.publicKey,
         contractor: contractor.publicKey,
         escrow,
         systemProgram: SystemProgram.programId,
-      }).rpc();
+      }).signers([contractor]).rpc();
     } catch (_) {
       rejected = true;
     }
@@ -211,12 +216,13 @@ describe("proofdock SOL milestone escrow", () => {
         id, new anchor.BN(100_000),
         new anchor.BN(Math.floor(Date.now() / 1000) + 3600),
         Array(32).fill(0),
+        Keypair.generate().publicKey,
       ).accounts({
         client: provider.wallet.publicKey,
         contractor: contractor.publicKey,
         escrow,
         systemProgram: SystemProgram.programId,
-      }).rpc();
+      }).signers([contractor]).rpc();
     } catch (_) {
       rejected = true;
     }
@@ -235,16 +241,88 @@ describe("proofdock SOL milestone escrow", () => {
       await program.methods.createEscrow(
         id, new anchor.BN(0), deadline,
         Array.from(createHash("sha256").update("terms").digest()),
+        Keypair.generate().publicKey,
       ).accounts({
         client: provider.wallet.publicKey,
         contractor: contractor.publicKey,
         escrow,
         systemProgram: SystemProgram.programId,
-      }).rpc();
+      }).signers([contractor]).rpc();
     } catch (error) {
       rejected = true;
       expect(String(error)).to.match(/ZeroAmount|Escrow amount must be greater than zero/i);
     }
     expect(rejected, "zero-value creation must fail").to.equal(true);
+  });
+
+  it("allows the agreed arbitrator to release a disputed SOL escrow", async () => {
+    const { escrow, contractor, arbitrator, amount } = await create();
+    const before = await provider.connection.getBalance(contractor.publicKey);
+    await program.methods.dispute().accounts({
+      party: contractor.publicKey, escrow,
+    }).signers([contractor]).rpc();
+    expect((await program.account.escrow.fetch(escrow)).disputed).to.equal(true);
+    let blocked = false;
+    try {
+      await program.methods.release().accounts({
+        client: provider.wallet.publicKey, contractor: contractor.publicKey, escrow,
+      }).rpc();
+    } catch (_) { blocked = true; }
+    expect(blocked, "a disputed escrow cannot be released without arbitrator").to.equal(true);
+    const impostor = Keypair.generate();
+    blocked = false;
+    try {
+      await program.methods.resolveDispute(true).accounts({
+        arbitrator: impostor.publicKey, client: provider.wallet.publicKey,
+        contractor: contractor.publicKey, escrow,
+      }).signers([impostor]).rpc();
+    } catch (_) { blocked = true; }
+    expect(blocked, "wrong arbitrator cannot choose a payout").to.equal(true);
+    await program.methods.resolveDispute(true).accounts({
+      arbitrator: arbitrator.publicKey, client: provider.wallet.publicKey,
+      contractor: contractor.publicKey, escrow,
+    }).signers([arbitrator]).rpc();
+    expect(await provider.connection.getBalance(contractor.publicKey) - before).to.equal(amount.toNumber());
+    expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
+  });
+
+  it("allows the arbitrator to return a disputed SOL escrow to the client", async () => {
+    const { escrow, contractor, arbitrator } = await create();
+    const before = await provider.connection.getBalance(contractor.publicKey);
+    await program.methods.dispute().accounts({ party: provider.wallet.publicKey, escrow }).rpc();
+    await program.methods.resolveDispute(false).accounts({
+      arbitrator: arbitrator.publicKey, client: provider.wallet.publicKey,
+      contractor: contractor.publicKey, escrow,
+    }).signers([arbitrator]).rpc();
+    expect(await provider.connection.getBalance(contractor.publicKey)).to.equal(before);
+    expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
+  });
+
+  it("rejects disputes opened by non-parties", async () => {
+    const { escrow } = await create();
+    const stranger = Keypair.generate();
+    let blocked = false;
+    try {
+      await program.methods.dispute().accounts({ party: stranger.publicKey, escrow })
+        .signers([stranger]).rpc();
+    } catch (_) { blocked = true; }
+    expect(blocked).to.equal(true);
+    expect((await program.account.escrow.fetch(escrow)).disputed).to.equal(false);
+  });
+
+  it("requires both parties to sign an expired refund", async () => {
+    const { escrow, contractor } = await create(3);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    let blocked = false;
+    try {
+      await program.methods.refundExpired().accounts({
+        client: provider.wallet.publicKey, contractor: contractor.publicKey, escrow,
+      }).rpc();
+    } catch (_) { blocked = true; }
+    expect(blocked).to.equal(true);
+    await program.methods.refundExpired().accounts({
+      client: provider.wallet.publicKey, contractor: contractor.publicKey, escrow,
+    }).signers([contractor]).rpc();
+    expect(await provider.connection.getAccountInfo(escrow)).to.equal(null);
   });
 });
