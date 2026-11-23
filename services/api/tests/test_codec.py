@@ -10,7 +10,7 @@ from app.codec import (
 
 
 def test_expected_escrow_account_layout():
-    assert ESCROW_ACCOUNT_SIZE == 129
+    assert ESCROW_ACCOUNT_SIZE == 162
     assert CLIENT_MEMCMP_OFFSET == 16
     assert len(ESCROW_DISCRIMINATOR) == 8
 
@@ -39,7 +39,10 @@ def test_decodes_anchor_escrow(account_data):
     assert record.bump == 251
     assert record.client == b58encode(bytes(range(1, 33)))
     assert record.contractor == b58encode(bytes(range(33, 65)))
+    assert record.arbitrator == b58encode(bytes(range(100, 132)))
+    assert record.disputed is False
     assert record.as_dict()["status"] == "funded"
+    assert record.as_dict()["arbitrator"] == record.arbitrator
 
 
 def test_rejects_wrong_discriminator(account_data):
@@ -48,5 +51,13 @@ def test_rejects_wrong_discriminator(account_data):
 
 
 def test_rejects_truncated_data(account_data):
-    with pytest.raises(ValueError, match="expected 129 bytes"):
+    with pytest.raises(ValueError, match="expected 162 bytes"):
         decode_escrow(account_data[:-1], "EscrowAccount")
+
+
+def test_disputed_escrow_is_reported_with_disputed_status(account_data):
+    payload = bytearray(account_data)
+    payload[-2] = 1
+    record = decode_escrow(bytes(payload), "EscrowAccount")
+    assert record.disputed is True
+    assert record.as_dict()["status"] == "disputed"
