@@ -178,111 +178,137 @@ pub mod proofdock {
         Ok(())
     }
 
-    /// The client authorizes release of the vault's token balance.
-    /// Any unsolicited extra tokens deposited in the vault go to the contractor,
-    /// preventing a dust transfer from permanently blocking vault closure.
-    pub fn release_token_escrow(ctx: Context<ReleaseTokenEscrow>) -> Result<()> {
-        let amount = ctx.accounts.vault.amount;
-        let client_key = ctx.accounts.client.key();
-        let id_bytes = ctx.accounts.token_escrow.id.to_le_bytes();
-        let bump = [ctx.accounts.token_escrow.bump];
-        let signer_seeds: &[&[u8]] = &[
-            b"token-escrow",
-            client_key.as_ref(),
-            id_bytes.as_ref(),
-            &bump,
-        ];
-        let signer = &[signer_seeds];
 
-        token::transfer_checked(
-            CpiContext::new(
-                ctx.accounts.token_program.key(),
-                TransferChecked {
-                    from: ctx.accounts.vault.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.contractor_token.to_account_info(),
-                    authority: ctx.accounts.token_escrow.to_account_info(),
-                },
-            )
-            .with_signer(signer),
+    /// Either party can freeze settlement by filing a dispute.
+    pub fn dispute(ctx: Context<Dispute>) -> Result<()> {
+        let escrow = &mut ctx.accounts.escrow;
+        require!(
+            ctx.accounts.party.key() == escrow.client || ctx.accounts.party.key() == escrow.contractor,
+            EscrowError::UnauthorizedParty
+        );
+        require!(!escrow.disputed, EscrowError::AlreadyDisputed);
+        escrow.disputed = true;
+        emit!(EscrowDisputed { escrow: escrow.key(), party: ctx.accounts.party.key() });
+        Ok(())
+    }
+
+    /// Only the arbitrator the parties accepted at creation can settle a disputed SOL escrow.
+    pub fn resolve_dispute(ctx: Context<ResolveDispute>, pay_contractor: bool) -> Result<()> {
+        require!(ctx.accounts.escrow.disputed, EscrowError::NotDisputed);
+        let amount = ctx.accounts.escrow.amount;
+        if pay_contractor {
+            let escrow_info = ctx.accounts.escrow.to_account_info();
+            let contractor_info = ctx.accounts.contractor.to_account_info();
+            {
+                let mut src = escrow_info.try_borrow_mut_lamports()?;
+                **src = (**src).checked_sub(amount).ok_or(EscrowError::BalanceUnderflow)?;
+            }
+            {
+                let mut dst = contractor_info.try_borrow_mut_lamports()?;
+                **dst = (**dst).checked_add(amount).ok_or(EscrowError::BalanceOverflow)?;
+            }
+        }
+        // Anchor closes the escrow to its client, returning the rent reserve
+        // and, in a client-favoring verdict, the escrow deposit as well.
+        emit!(EscrowResolved {
+            escrow: ctx.accounts.escrow.key(),
+            arbitrator: ctx.accounts.arbitrator.key(),
+            contractor_paid: pay_contractor,
             amount,
-            ctx.accounts.mint.decimals,
-        )?;
-        token::close_account(
-            CpiContext::new(
-                ctx.accounts.token_program.key(),
-                CloseAccount {
-                    account: ctx.accounts.vault.to_account_info(),
-                    destination: ctx.accounts.client.to_account_info(),
-                    authority: ctx.accounts.token_escrow.to_account_info(),
-                },
-            )
-            .with_signer(signer),
-        )?;
+        });
+        Ok(())
+    }
 
+    pub fn dispute_token_escrow(ctx: Context<DisputeTokenEscrow>) -> Result<()> {
+        let escrow = &mut ctx.accounts.token_escrow;
+        require!(
+            ctx.accounts.party.key() == escrow.client || ctx.accounts.party.key() == escrow.contractor,
+            EscrowError::UnauthorizedParty
+        );
+        require!(!escrow.disputed, EscrowError::AlreadyDisputed);
+        escrow.disputed = true;
+        emit!(EscrowDisputed { escrow: escrow.key(), party: ctx.accounts.party.key() });
+        Ok(())
+    }
+
+    /// Transfer exactly the contracted amount to the contractor.
+    /// Unsolicited vault surplus is returned to the original client.
+    pub fn release_token_escrow(ctx: Context<ReleaseTokenEscrow>) -> Result<()> {
+        require!(!ctx.accounts.token_escrow.disputed, EscrowError::Disputed);
+        let agreed = ctx.accounts.token_escrow.amount;
+        settle_token_vault(
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_escrow.to_account_info(),
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.mint.to_account_info(),
+            ctx.accounts.client_token.to_account_info(),
+            ctx.accounts.contractor_token.to_account_info(),
+            ctx.accounts.client.to_account_info(),
+            ctx.accounts.mint.decimals,
+            agreed, ctx.accounts.vault.amount, ctx.accounts.client.key(),
+            ctx.accounts.token_escrow.id, ctx.accounts.token_escrow.bump, true,
+        )?;
         emit!(TokenEscrowReleased {
             escrow: ctx.accounts.token_escrow.key(),
-            client: client_key,
+            client: ctx.accounts.client.key(),
             contractor: ctx.accounts.contractor.key(),
             mint: ctx.accounts.mint.key(),
-            amount,
+            amount: agreed,
         });
         Ok(())
     }
 
-    /// After the deadline, return the vault's complete balance to the client.
+    /// Normal expiry refund is jointly authorized. Disputes go to the arbitrator.
     pub fn refund_expired_token_escrow(ctx: Context<RefundExpiredTokenEscrow>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
-        require!(
-            now >= ctx.accounts.token_escrow.deadline,
-            EscrowError::NotExpired
-        );
-        let amount = ctx.accounts.vault.amount;
-        let client_key = ctx.accounts.client.key();
-        let id_bytes = ctx.accounts.token_escrow.id.to_le_bytes();
-        let bump = [ctx.accounts.token_escrow.bump];
-        let signer_seeds: &[&[u8]] = &[
-            b"token-escrow",
-            client_key.as_ref(),
-            id_bytes.as_ref(),
-            &bump,
-        ];
-        let signer = &[signer_seeds];
-
-        token::transfer_checked(
-            CpiContext::new(
-                ctx.accounts.token_program.key(),
-                TransferChecked {
-                    from: ctx.accounts.vault.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.client_token.to_account_info(),
-                    authority: ctx.accounts.token_escrow.to_account_info(),
-                },
-            )
-            .with_signer(signer),
-            amount,
+        require!(now >= ctx.accounts.token_escrow.deadline, EscrowError::NotExpired);
+        require!(!ctx.accounts.token_escrow.disputed, EscrowError::Disputed);
+        let agreed = ctx.accounts.token_escrow.amount;
+        settle_token_vault(
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_escrow.to_account_info(),
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.mint.to_account_info(),
+            ctx.accounts.client_token.to_account_info(),
+            ctx.accounts.client_token.to_account_info(),
+            ctx.accounts.client.to_account_info(),
             ctx.accounts.mint.decimals,
+            agreed, ctx.accounts.vault.amount, ctx.accounts.client.key(),
+            ctx.accounts.token_escrow.id, ctx.accounts.token_escrow.bump, false,
         )?;
-        token::close_account(
-            CpiContext::new(
-                ctx.accounts.token_program.key(),
-                CloseAccount {
-                    account: ctx.accounts.vault.to_account_info(),
-                    destination: ctx.accounts.client.to_account_info(),
-                    authority: ctx.accounts.token_escrow.to_account_info(),
-                },
-            )
-            .with_signer(signer),
-        )?;
-
         emit!(TokenEscrowRefunded {
             escrow: ctx.accounts.token_escrow.key(),
-            client: client_key,
+            client: ctx.accounts.client.key(),
             mint: ctx.accounts.mint.key(),
-            amount,
+            amount: agreed,
         });
         Ok(())
     }
+
+    pub fn resolve_token_dispute(ctx: Context<ResolveTokenDispute>, pay_contractor: bool) -> Result<()> {
+        require!(ctx.accounts.token_escrow.disputed, EscrowError::NotDisputed);
+        let agreed = ctx.accounts.token_escrow.amount;
+        settle_token_vault(
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_escrow.to_account_info(),
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.mint.to_account_info(),
+            ctx.accounts.client_token.to_account_info(),
+            ctx.accounts.contractor_token.to_account_info(),
+            ctx.accounts.client.to_account_info(),
+            ctx.accounts.mint.decimals,
+            agreed, ctx.accounts.vault.amount, ctx.accounts.client.key(),
+            ctx.accounts.token_escrow.id, ctx.accounts.token_escrow.bump, pay_contractor,
+        )?;
+        emit!(EscrowResolved {
+            escrow: ctx.accounts.token_escrow.key(),
+            arbitrator: ctx.accounts.arbitrator.key(),
+            contractor_paid: pay_contractor,
+            amount: agreed,
+        });
+        Ok(())
+    }
+
 }
 
 #[derive(Accounts)]
