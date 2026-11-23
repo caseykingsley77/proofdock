@@ -28,6 +28,7 @@ pub mod proofdock {
         amount: u64,
         deadline: i64,
         metadata_hash: [u8; 32],
+        arbitrator: Pubkey,
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         validate_terms(amount, deadline, now)?;
@@ -36,11 +37,14 @@ pub mod proofdock {
             EscrowError::SameParties
         );
         require!(metadata_hash != [0u8; 32], EscrowError::EmptyMetadataHash);
+        validate_arbitrator(arbitrator, ctx.accounts.client.key(), ctx.accounts.contractor.key())?;
 
         let escrow = &mut ctx.accounts.escrow;
         escrow.id = id;
         escrow.client = ctx.accounts.client.key();
         escrow.contractor = ctx.accounts.contractor.key();
+        escrow.arbitrator = arbitrator;
+        escrow.disputed = false;
         escrow.amount = amount;
         escrow.deadline = deadline;
         escrow.metadata_hash = metadata_hash;
@@ -74,6 +78,7 @@ pub mod proofdock {
     /// Anchor automatically closes the escrow after this instruction succeeds,
     /// returning the rent-exempt reserve to the client.
     pub fn release(ctx: Context<Release>) -> Result<()> {
+        require!(!ctx.accounts.escrow.disputed, EscrowError::Disputed);
         let amount = ctx.accounts.escrow.amount;
         let escrow_info = ctx.accounts.escrow.to_account_info();
         let contractor_info = ctx.accounts.contractor.to_account_info();
@@ -108,6 +113,7 @@ pub mod proofdock {
     pub fn refund_expired(ctx: Context<RefundExpired>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         require!(now >= ctx.accounts.escrow.deadline, EscrowError::NotExpired);
+        require!(!ctx.accounts.escrow.disputed, EscrowError::Disputed);
 
         emit!(EscrowRefunded {
             escrow: ctx.accounts.escrow.key(),
@@ -125,6 +131,7 @@ pub mod proofdock {
         amount: u64,
         deadline: i64,
         metadata_hash: [u8; 32],
+        arbitrator: Pubkey,
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         validate_terms(amount, deadline, now)?;
@@ -133,11 +140,14 @@ pub mod proofdock {
             EscrowError::SameParties
         );
         require!(metadata_hash != [0; 32], EscrowError::EmptyMetadataHash);
+        validate_arbitrator(arbitrator, ctx.accounts.client.key(), ctx.accounts.contractor.key())?;
 
         let escrow = &mut ctx.accounts.token_escrow;
         escrow.id = id;
         escrow.client = ctx.accounts.client.key();
         escrow.contractor = ctx.accounts.contractor.key();
+        escrow.arbitrator = arbitrator;
+        escrow.disputed = false;
         escrow.mint = ctx.accounts.mint.key();
         escrow.amount = amount;
         escrow.deadline = deadline;
@@ -281,8 +291,8 @@ pub struct CreateEscrow<'info> {
     #[account(mut)]
     pub client: Signer<'info>,
 
-    /// The contractor is a system-owned wallet that receives released SOL.
-    pub contractor: SystemAccount<'info>,
+    /// Both parties explicitly accept the arbitrator chosen for this milestone.
+    pub contractor: Signer<'info>,
 
     #[account(
         init,
@@ -318,10 +328,12 @@ pub struct Release<'info> {
 pub struct RefundExpired<'info> {
     #[account(mut)]
     pub client: Signer<'info>,
+    pub contractor: Signer<'info>,
 
     #[account(
         mut,
         has_one = client,
+        has_one = contractor,
         close = client,
         seeds = [b"escrow", client.key().as_ref(), &escrow.id.to_le_bytes()],
         bump = escrow.bump,
@@ -336,7 +348,7 @@ pub struct RefundExpired<'info> {
 pub struct CreateTokenEscrow<'info> {
     #[account(mut)]
     pub client: Signer<'info>,
-    pub contractor: SystemAccount<'info>,
+    pub contractor: Signer<'info>,
     pub mint: Account<'info, Mint>,
     #[account(
         mut,
@@ -399,11 +411,13 @@ pub struct ReleaseTokenEscrow<'info> {
 pub struct RefundExpiredTokenEscrow<'info> {
     #[account(mut)]
     pub client: Signer<'info>,
+    pub contractor: Signer<'info>,
     #[account(address = token_escrow.mint)]
     pub mint: Account<'info, Mint>,
     #[account(
         mut,
         has_one = client,
+        has_one = contractor,
         has_one = mint,
         close = client,
         seeds = [b"token-escrow", client.key().as_ref(), &token_escrow.id.to_le_bytes()],
@@ -429,10 +443,12 @@ pub struct TokenEscrow {
     pub id: u64,
     pub client: Pubkey,
     pub contractor: Pubkey,
+    pub arbitrator: Pubkey,
     pub mint: Pubkey,
     pub amount: u64,
     pub deadline: i64,
     pub metadata_hash: [u8; 32],
+    pub disputed: bool,
     pub bump: u8,
 }
 
@@ -468,9 +484,11 @@ pub struct Escrow {
     pub id: u64,
     pub client: Pubkey,
     pub contractor: Pubkey,
+    pub arbitrator: Pubkey,
     pub amount: u64,
     pub deadline: i64,
     pub metadata_hash: [u8; 32],
+    pub disputed: bool,
     pub bump: u8,
 }
 
@@ -511,12 +529,29 @@ pub enum EscrowError {
     SameParties,
     #[msg("Metadata commitment must be nonzero")]
     EmptyMetadataHash,
+    #[msg("Arbitrator must be a nonzero third-party public key")]
+    InvalidArbitrator,
+    #[msg("Only an escrow party may open a dispute")]
+    UnauthorizedParty,
+    #[msg("Escrow is under dispute and requires arbitrator resolution")]
+    Disputed,
+    #[msg("Escrow is not disputed")]
+    NotDisputed,
+    #[msg("Escrow is already disputed")]
+    AlreadyDisputed,
+    #[msg("Token vault has insufficient funds for agreed payout")]
+    InsufficientVaultBalance,
     #[msg("Escrow has not reached its deadline")]
     NotExpired,
     #[msg("Escrow balance underflow")]
     BalanceUnderflow,
     #[msg("Recipient balance overflow")]
     BalanceOverflow,
+}
+
+fn validate_arbitrator(arbitrator: Pubkey, client: Pubkey, contractor: Pubkey) -> Result<()> {
+    require!(arbitrator != Pubkey::default() && arbitrator != client && arbitrator != contractor, EscrowError::InvalidArbitrator);
+    Ok(())
 }
 
 fn validate_terms(amount: u64, deadline: i64, now: i64) -> Result<()> {
