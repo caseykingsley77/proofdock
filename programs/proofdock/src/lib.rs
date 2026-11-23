@@ -404,6 +404,8 @@ pub struct ReleaseTokenEscrow<'info> {
     pub vault: Account<'info, TokenAccount>,
     #[account(mut, token::mint = mint, token::authority = contractor)]
     pub contractor_token: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = mint, token::authority = client)]
+    pub client_token: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -437,6 +439,82 @@ pub struct RefundExpiredTokenEscrow<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+
+#[derive(Accounts)]
+pub struct Dispute<'info> {
+    pub party: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.client.as_ref(), &escrow.id.to_le_bytes()],
+        bump = escrow.bump,
+    )]
+    pub escrow: Account<'info, Escrow>,
+}
+
+#[derive(Accounts)]
+pub struct ResolveDispute<'info> {
+    pub arbitrator: Signer<'info>,
+    #[account(mut)]
+    pub client: SystemAccount<'info>,
+    #[account(mut)]
+    pub contractor: SystemAccount<'info>,
+    #[account(
+        mut,
+        has_one = arbitrator,
+        has_one = client,
+        has_one = contractor,
+        close = client,
+        seeds = [b"escrow", client.key().as_ref(), &escrow.id.to_le_bytes()],
+        bump = escrow.bump,
+    )]
+    pub escrow: Account<'info, Escrow>,
+}
+
+#[derive(Accounts)]
+pub struct DisputeTokenEscrow<'info> {
+    pub party: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"token-escrow", token_escrow.client.as_ref(), &token_escrow.id.to_le_bytes()],
+        bump = token_escrow.bump,
+    )]
+    pub token_escrow: Account<'info, TokenEscrow>,
+}
+
+#[derive(Accounts)]
+pub struct ResolveTokenDispute<'info> {
+    pub arbitrator: Signer<'info>,
+    #[account(mut)]
+    pub client: SystemAccount<'info>,
+    pub contractor: SystemAccount<'info>,
+    #[account(address = token_escrow.mint)]
+    pub mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        has_one = arbitrator,
+        has_one = client,
+        has_one = contractor,
+        has_one = mint,
+        close = client,
+        seeds = [b"token-escrow", client.key().as_ref(), &token_escrow.id.to_le_bytes()],
+        bump = token_escrow.bump,
+    )]
+    pub token_escrow: Account<'info, TokenEscrow>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = token_escrow,
+        seeds = [b"token-vault", token_escrow.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = mint, token::authority = client)]
+    pub client_token: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = mint, token::authority = contractor)]
+    pub contractor_token: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct TokenEscrow {
@@ -450,6 +528,20 @@ pub struct TokenEscrow {
     pub metadata_hash: [u8; 32],
     pub disputed: bool,
     pub bump: u8,
+}
+
+#[event]
+pub struct EscrowDisputed {
+    pub escrow: Pubkey,
+    pub party: Pubkey,
+}
+
+#[event]
+pub struct EscrowResolved {
+    pub escrow: Pubkey,
+    pub arbitrator: Pubkey,
+    pub contractor_paid: bool,
+    pub amount: u64,
 }
 
 #[event]
@@ -547,6 +639,71 @@ pub enum EscrowError {
     BalanceUnderflow,
     #[msg("Recipient balance overflow")]
     BalanceOverflow,
+}
+
+
+#[allow(clippy::too_many_arguments)]
+fn settle_token_vault<'info>(
+    token_program: AccountInfo<'info>,
+    token_escrow: AccountInfo<'info>,
+    vault: AccountInfo<'info>,
+    mint: AccountInfo<'info>,
+    client_token: AccountInfo<'info>,
+    contractor_token: AccountInfo<'info>,
+    client: AccountInfo<'info>,
+    decimals: u8,
+    agreed: u64,
+    balance: u64,
+    client_key: Pubkey,
+    id: u64,
+    bump: u8,
+    pay_contractor: bool,
+) -> Result<()> {
+    // Deposits from other sources cannot be attributed to individual donors.
+    // Return excess to the recorded client rather than inflating contractor payout.
+    let surplus = balance.checked_sub(agreed).ok_or(EscrowError::InsufficientVaultBalance)?;
+    let id_bytes = id.to_le_bytes();
+    let bump_bytes = [bump];
+    let seeds: &[&[u8]] = &[
+        b"token-escrow",
+        client_key.as_ref(),
+        id_bytes.as_ref(),
+        &bump_bytes,
+    ];
+    let signer = &[seeds];
+    if pay_contractor {
+        token::transfer_checked(
+            CpiContext::new(token_program.clone(), TransferChecked {
+                from: vault.clone(),
+                mint: mint.clone(),
+                to: contractor_token,
+                authority: token_escrow.clone(),
+            }).with_signer(signer),
+            agreed,
+            decimals,
+        )?;
+    }
+    let client_amount = if pay_contractor { surplus } else { balance };
+    if client_amount > 0 {
+        token::transfer_checked(
+            CpiContext::new(token_program.clone(), TransferChecked {
+                from: vault.clone(),
+                mint: mint.clone(),
+                to: client_token,
+                authority: token_escrow.clone(),
+            }).with_signer(signer),
+            client_amount,
+            decimals,
+        )?;
+    }
+    token::close_account(
+        CpiContext::new(token_program, CloseAccount {
+            account: vault,
+            destination: client,
+            authority: token_escrow,
+        }).with_signer(signer),
+    )?;
+    Ok(())
 }
 
 fn validate_arbitrator(arbitrator: Pubkey, client: Pubkey, contractor: Pubkey) -> Result<()> {
