@@ -1,8 +1,8 @@
 # ProofDock
 
-**Rust/Anchor + Python/FastAPI | Solana SOL milestone escrow | Development MVP (2026)**
+**Rust/Anchor + Python/FastAPI | SOL and classic SPL-token escrow | Development MVP (2026)**
 
-ProofDock is an educational, Web3-style escrow prototype for freelancers and contractors. A client deposits SOL against a single milestone, identifies the contractor, commits to off-chain terms using a SHA-256 hash, and sets a deadline. The client can release the funds to the contractor; after the deadline, the client may reclaim them. Each completed or expired escrow is closed, returning rent to the client.
+ProofDock is an educational, Web3-style escrow prototype for freelancers and contractors. A client deposits SOL against a single milestone, identifies the contractor, commits to off-chain terms using a SHA-256 hash, and sets a deadline. The client can release funds to the contractor. Both parties must sign an ordinary refund after the deadline; either party can file a dispute for a preselected independent arbitrator to resolve. Classic SPL-token escrows follow the same model. Each completed or expired escrow is closed, returning rent to the client.
 
 > **Maturity:** Prototype. The Python tests run locally with mocked Solana RPC. The Rust/Anchor contract and TypeScript integration tests require the Solana/Anchor toolchain and a local validator; deployment, audit, and mainnet suitability have **not** been established.
 
@@ -11,7 +11,7 @@ ProofDock is an educational, Web3-style escrow prototype for freelancers and con
 - **On-chain:** Rust, Anchor 1.2.1, Solana program-derived addresses (PDAs), system program CPI, rent-aware lamport accounting.
 - **Backend:** Python 3.11+, FastAPI, Pydantic v2, HTTPX, strict base58/address and Anchor/Borsh account decoding.
 - **Testing:** pytest + mocked RPC, Rust unit tests, TypeScript Anchor local-validator scenarios.
-- **Security posture:** client-only release/refund authority, deterministic address derivation, account ownership checks, checked arithmetic, deadline boundaries, no private keys in the HTTP service.
+- **Security posture:** client-only normal release, jointly authorized expiry refunds, either-party dispute and accepted-arbitrator resolution, deterministic PDA validation, checked arithmetic, no private keys in the HTTP service.
 
 ## Core design
 
@@ -31,9 +31,14 @@ flowchart LR
 
 | Instruction | Authorized signer | State transition |
 | --- | --- | --- |
-| `create_escrow(id, amount, deadline, metadata_hash)` | Client | Transfer SOL into newly created PDA and record immutable terms |
-| `release()` | Original client | Pay exact escrow amount to original contractor, close PDA, return rent |
-| `refund_expired()` | Original client, once expired | Close PDA and return deposit plus rent to the client |
+| `create_escrow(id, amount, deadline, metadata_hash, arbitrator)` | Client + contractor | Fund SOL, accept a distinct arbitrator and record terms |
+| `release()` | Original client | Pay exact amount to contractor unless disputed |
+| `refund_expired()` | Original client + contractor, after expiry | Refund if no dispute |
+| `dispute()` | Either party | Freeze normal release/refund |
+| `resolve_dispute(pay_contractor)` | Accepted arbitrator | Settle to contractor or client and close account |
+| `create_token_escrow` / `release_token_escrow` | Client + contractor at creation; client at release | Lock classic SPL tokens, transfer exact agreed amount on release |
+| `refund_expired_token_escrow` | Client + contractor | Refund classic SPL token vault after expiry |
+| `dispute_token_escrow` / `resolve_token_dispute` | Either party / accepted arbitrator | Dispute and settle token vault |
 
 To generate a reproducible terms commitment, agree on an off-chain JSON document, then run:
 
@@ -43,7 +48,7 @@ python scripts/hash_terms.py agreement.json
 
 The CLI uses sorted-key, compact UTF-8 JSON and prints the 32-byte SHA-256 digest as hex. Convert that digest to 32 bytes before passing it as `metadata_hash` to the Anchor instruction. Do not publish sensitive agreement details by default.
 
-**Important:** The client controls release. The contractor cannot withdraw unilaterally. This is a *client-authorized escrow prototype*, not a trustless arbitration or dispute-resolution protocol.
+**Important:** The arbitrator is trusted: it can resolve a disputed escrow to either party, while arbitrator unavailability can lock funds indefinitely. Unexpected SPL token deposits go to the client at settlement; they cannot be returned to the original depositor by this design. This is *not* trustless arbitration or an independently audited contract. The account format and instruction interfaces were changed incompatibly; no migration has been implemented.
 
 ### Python API (read-only)
 
@@ -71,7 +76,7 @@ By default, API calls target `http://127.0.0.1:8899` (local Solana RPC). Without
 
 ## Building and testing the Rust/Anchor program
 
-Use **Rust 1.89+**, **Anchor CLI 1.2.1**, **Solana CLI 4.1.2**, and **Node 20.18+**. AVM is the recommended way to select Anchor 1.2.1; see the official docs. These versions target Anchor v1, not the separate v2 release candidates.
+Use **Current stable Rust (Rust 1.91 or later for the CI Anchor install dependency)**, **Anchor CLI 1.2.1**, **Solana CLI 4.1.2**, and **Node 20.18+**. AVM is the recommended way to select Anchor 1.2.1; see the official docs. These versions target Anchor v1, not the separate v2 release candidates.
 
 ```bash
 # Prerequisites: cargo, solana-keygen, anchor, npm; a local funded Solana wallet
@@ -88,19 +93,20 @@ anchor test
 
 ## Current validation
 
-- Python: **33 pytest tests passing** in the build environment used to create this scaffold.
-- Rust: 5 unit-test scenarios authored but **not executed** in that environment (Rust/cargo unavailable).
-- Anchor integration: local-validator scenarios authored but **not executed** in that environment (Anchor/Solana toolchains unavailable).
+- Python: run `pytest -q` on the PR branch; historical scaffold results do not validate the new account schema.
+- Rust and Anchor: subject to the PR's actual CI checks; do not infer the new changes passed from earlier runs.
+- Anchor integration: the PR adds validator scenarios for arbitration, unauthorized settlement, exact SPL payout, surplus token handling and signed refunds. Review the latest GitHub Actions results before merging.
 - Deployment: none. Contract has not been audited. Do not use with real funds.
 
 ## Repository layout
 
 ```
 programs/proofdock/src/lib.rs    Anchor instructions, state, constraints, events, errors
-services/api/app/               FastAPI routes, RPC transport, account codec
+services/api/app/               FastAPI routes, RPC transport, updated SOL account codec
 services/api/tests/             Python unit and API tests
-tests/proofdock.ts              Local-validator lifecycle integration tests
+tests/proofdock.ts              Local-validator SOL lifecycle and dispute tests
 docs/ARCHITECTURE.md            Account layout and threat model
+tests/token_escrow.ts           Classic SPL-token payout and arbitration tests
 docs/ROADMAP.md                 Planned milestones and acceptance criteria
 .github/workflows/ci.yml        Python/Rust CI checks
 ```
