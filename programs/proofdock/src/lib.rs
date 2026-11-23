@@ -37,7 +37,11 @@ pub mod proofdock {
             EscrowError::SameParties
         );
         require!(metadata_hash != [0u8; 32], EscrowError::EmptyMetadataHash);
-        validate_arbitrator(arbitrator, ctx.accounts.client.key(), ctx.accounts.contractor.key())?;
+        validate_arbitrator(
+            arbitrator,
+            ctx.accounts.client.key(),
+            ctx.accounts.contractor.key(),
+        )?;
 
         let escrow = &mut ctx.accounts.escrow;
         escrow.id = id;
@@ -140,7 +144,11 @@ pub mod proofdock {
             EscrowError::SameParties
         );
         require!(metadata_hash != [0; 32], EscrowError::EmptyMetadataHash);
-        validate_arbitrator(arbitrator, ctx.accounts.client.key(), ctx.accounts.contractor.key())?;
+        validate_arbitrator(
+            arbitrator,
+            ctx.accounts.client.key(),
+            ctx.accounts.contractor.key(),
+        )?;
 
         let escrow = &mut ctx.accounts.token_escrow;
         escrow.id = id;
@@ -178,17 +186,20 @@ pub mod proofdock {
         Ok(())
     }
 
-
     /// Either party can freeze settlement by filing a dispute.
     pub fn dispute(ctx: Context<Dispute>) -> Result<()> {
         let escrow = &mut ctx.accounts.escrow;
         require!(
-            ctx.accounts.party.key() == escrow.client || ctx.accounts.party.key() == escrow.contractor,
+            ctx.accounts.party.key() == escrow.client
+                || ctx.accounts.party.key() == escrow.contractor,
             EscrowError::UnauthorizedParty
         );
         require!(!escrow.disputed, EscrowError::AlreadyDisputed);
         escrow.disputed = true;
-        emit!(EscrowDisputed { escrow: escrow.key(), party: ctx.accounts.party.key() });
+        emit!(EscrowDisputed {
+            escrow: escrow.key(),
+            party: ctx.accounts.party.key()
+        });
         Ok(())
     }
 
@@ -201,11 +212,15 @@ pub mod proofdock {
             let contractor_info = ctx.accounts.contractor.to_account_info();
             {
                 let mut src = escrow_info.try_borrow_mut_lamports()?;
-                **src = (**src).checked_sub(amount).ok_or(EscrowError::BalanceUnderflow)?;
+                **src = (**src)
+                    .checked_sub(amount)
+                    .ok_or(EscrowError::BalanceUnderflow)?;
             }
             {
                 let mut dst = contractor_info.try_borrow_mut_lamports()?;
-                **dst = (**dst).checked_add(amount).ok_or(EscrowError::BalanceOverflow)?;
+                **dst = (**dst)
+                    .checked_add(amount)
+                    .ok_or(EscrowError::BalanceOverflow)?;
             }
         }
         // Anchor closes the escrow to its client, returning the rent reserve
@@ -222,12 +237,16 @@ pub mod proofdock {
     pub fn dispute_token_escrow(ctx: Context<DisputeTokenEscrow>) -> Result<()> {
         let escrow = &mut ctx.accounts.token_escrow;
         require!(
-            ctx.accounts.party.key() == escrow.client || ctx.accounts.party.key() == escrow.contractor,
+            ctx.accounts.party.key() == escrow.client
+                || ctx.accounts.party.key() == escrow.contractor,
             EscrowError::UnauthorizedParty
         );
         require!(!escrow.disputed, EscrowError::AlreadyDisputed);
         escrow.disputed = true;
-        emit!(EscrowDisputed { escrow: escrow.key(), party: ctx.accounts.party.key() });
+        emit!(EscrowDisputed {
+            escrow: escrow.key(),
+            party: ctx.accounts.party.key()
+        });
         Ok(())
     }
 
@@ -245,8 +264,12 @@ pub mod proofdock {
             ctx.accounts.contractor_token.to_account_info(),
             ctx.accounts.client.to_account_info(),
             ctx.accounts.mint.decimals,
-            agreed, ctx.accounts.vault.amount, ctx.accounts.client.key(),
-            ctx.accounts.token_escrow.id, ctx.accounts.token_escrow.bump, true,
+            agreed,
+            ctx.accounts.vault.amount,
+            ctx.accounts.client.key(),
+            ctx.accounts.token_escrow.id,
+            ctx.accounts.token_escrow.bump,
+            true,
         )?;
         emit!(TokenEscrowReleased {
             escrow: ctx.accounts.token_escrow.key(),
@@ -261,7 +284,10 @@ pub mod proofdock {
     /// Normal expiry refund is jointly authorized. Disputes go to the arbitrator.
     pub fn refund_expired_token_escrow(ctx: Context<RefundExpiredTokenEscrow>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
-        require!(now >= ctx.accounts.token_escrow.deadline, EscrowError::NotExpired);
+        require!(
+            now >= ctx.accounts.token_escrow.deadline,
+            EscrowError::NotExpired
+        );
         require!(!ctx.accounts.token_escrow.disputed, EscrowError::Disputed);
         let agreed = ctx.accounts.token_escrow.amount;
         settle_token_vault(
@@ -273,8 +299,12 @@ pub mod proofdock {
             ctx.accounts.client_token.to_account_info(),
             ctx.accounts.client.to_account_info(),
             ctx.accounts.mint.decimals,
-            agreed, ctx.accounts.vault.amount, ctx.accounts.client.key(),
-            ctx.accounts.token_escrow.id, ctx.accounts.token_escrow.bump, false,
+            agreed,
+            ctx.accounts.vault.amount,
+            ctx.accounts.client.key(),
+            ctx.accounts.token_escrow.id,
+            ctx.accounts.token_escrow.bump,
+            false,
         )?;
         emit!(TokenEscrowRefunded {
             escrow: ctx.accounts.token_escrow.key(),
@@ -285,7 +315,10 @@ pub mod proofdock {
         Ok(())
     }
 
-    pub fn resolve_token_dispute(ctx: Context<ResolveTokenDispute>, pay_contractor: bool) -> Result<()> {
+    pub fn resolve_token_dispute(
+        ctx: Context<ResolveTokenDispute>,
+        pay_contractor: bool,
+    ) -> Result<()> {
         require!(ctx.accounts.token_escrow.disputed, EscrowError::NotDisputed);
         let agreed = ctx.accounts.token_escrow.amount;
         settle_token_vault(
@@ -297,8 +330,12 @@ pub mod proofdock {
             ctx.accounts.contractor_token.to_account_info(),
             ctx.accounts.client.to_account_info(),
             ctx.accounts.mint.decimals,
-            agreed, ctx.accounts.vault.amount, ctx.accounts.client.key(),
-            ctx.accounts.token_escrow.id, ctx.accounts.token_escrow.bump, pay_contractor,
+            agreed,
+            ctx.accounts.vault.amount,
+            ctx.accounts.client.key(),
+            ctx.accounts.token_escrow.id,
+            ctx.accounts.token_escrow.bump,
+            pay_contractor,
         )?;
         emit!(EscrowResolved {
             escrow: ctx.accounts.token_escrow.key(),
@@ -308,7 +345,6 @@ pub mod proofdock {
         });
         Ok(())
     }
-
 }
 
 #[derive(Accounts)]
@@ -464,7 +500,6 @@ pub struct RefundExpiredTokenEscrow<'info> {
     pub client_token: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
-
 
 #[derive(Accounts)]
 pub struct Dispute<'info> {
@@ -667,7 +702,6 @@ pub enum EscrowError {
     BalanceOverflow,
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn settle_token_vault<'info>(
     token_program: AccountInfo<'info>,
@@ -687,7 +721,9 @@ fn settle_token_vault<'info>(
 ) -> Result<()> {
     // Deposits from other sources cannot be attributed to individual donors.
     // Return excess to the recorded client rather than inflating contractor payout.
-    let surplus = balance.checked_sub(agreed).ok_or(EscrowError::InsufficientVaultBalance)?;
+    let surplus = balance
+        .checked_sub(agreed)
+        .ok_or(EscrowError::InsufficientVaultBalance)?;
     let id_bytes = id.to_le_bytes();
     let bump_bytes = [bump];
     let seeds: &[&[u8]] = &[
@@ -699,12 +735,16 @@ fn settle_token_vault<'info>(
     let signer = &[seeds];
     if pay_contractor {
         token::transfer_checked(
-            CpiContext::new(token_program.clone(), TransferChecked {
-                from: vault.clone(),
-                mint: mint.clone(),
-                to: contractor_token,
-                authority: token_escrow.clone(),
-            }).with_signer(signer),
+            CpiContext::new(
+                token_program.clone(),
+                TransferChecked {
+                    from: vault.clone(),
+                    mint: mint.clone(),
+                    to: contractor_token,
+                    authority: token_escrow.clone(),
+                },
+            )
+            .with_signer(signer),
             agreed,
             decimals,
         )?;
@@ -712,28 +752,39 @@ fn settle_token_vault<'info>(
     let client_amount = if pay_contractor { surplus } else { balance };
     if client_amount > 0 {
         token::transfer_checked(
-            CpiContext::new(token_program.clone(), TransferChecked {
-                from: vault.clone(),
-                mint: mint.clone(),
-                to: client_token,
-                authority: token_escrow.clone(),
-            }).with_signer(signer),
+            CpiContext::new(
+                token_program.clone(),
+                TransferChecked {
+                    from: vault.clone(),
+                    mint: mint.clone(),
+                    to: client_token,
+                    authority: token_escrow.clone(),
+                },
+            )
+            .with_signer(signer),
             client_amount,
             decimals,
         )?;
     }
     token::close_account(
-        CpiContext::new(token_program, CloseAccount {
-            account: vault,
-            destination: client,
-            authority: token_escrow,
-        }).with_signer(signer),
+        CpiContext::new(
+            token_program,
+            CloseAccount {
+                account: vault,
+                destination: client,
+                authority: token_escrow,
+            },
+        )
+        .with_signer(signer),
     )?;
     Ok(())
 }
 
 fn validate_arbitrator(arbitrator: Pubkey, client: Pubkey, contractor: Pubkey) -> Result<()> {
-    require!(arbitrator != Pubkey::default() && arbitrator != client && arbitrator != contractor, EscrowError::InvalidArbitrator);
+    require!(
+        arbitrator != Pubkey::default() && arbitrator != client && arbitrator != contractor,
+        EscrowError::InvalidArbitrator
+    );
     Ok(())
 }
 
