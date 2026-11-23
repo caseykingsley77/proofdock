@@ -19,9 +19,11 @@ class EscrowResponse(BaseModel):
     milestone_id: int
     client: str
     contractor: str
+    arbitrator: str
     amount_lamports: int
     deadline_unix: int
     metadata_sha256: str
+    disputed: bool
     bump: int
     status: str
 
